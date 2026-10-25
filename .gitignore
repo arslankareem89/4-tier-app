@@ -1,0 +1,57 @@
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Python virtual environments and cache
+.venv/
+**/.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+
+# Node dependencies and generated frontend build
+node_modules/
+**/node_modules/
+frontend/dist/
+
+# Local databases and uploads
+*.db
+uploads/
+backend/uploads/
+
+# Terraform local files, state, plans, and variable files
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.plan
+*.tfvars
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Local keys and certificates
+*.pem
+*.key
+
+# Operating system files
+.DS_Store
+
+# Additional virtual environments
+venv/
+**/venv/
+
+# Terraform variable files, state backups and saved plans
+terraform.tfvars
+terraform.tfvars.json
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.plan

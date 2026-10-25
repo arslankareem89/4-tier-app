@@ -1,0 +1,53 @@
+services:
+  database:
+    image: postgres:16-alpine
+    container_name: task_database
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-task_manager}
+      POSTGRES_USER: ${POSTGRES_USER:-task_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the ignored .env file}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    container_name: task_backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - uploaded_files:/app/uploads
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-task_user}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the ignored .env file}@database:5432/${POSTGRES_DB:-task_manager}
+      SECRET_KEY: ${LOCAL_SECRET_KEY:?Set LOCAL_SECRET_KEY in the ignored .env file}
+      UPLOAD_DIR: /app/uploads
+    depends_on:
+      database:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    container_name: task_frontend
+    ports:
+      - "3001:80"
+    depends_on:
+      - backend
+
+  tests:
+    profiles: ["test"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.test
+
+volumes:
+  postgres_data:
+  uploaded_files:
