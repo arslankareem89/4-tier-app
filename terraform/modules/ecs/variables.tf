@@ -82,6 +82,11 @@ variable "database_username" {
 }
 
 variable "database_secret_arn" {
-  description = "ARN of RDS-managed secret containing the database password"
+  description = "Secrets Manager ARN containing the application PostgreSQL credentials"
+  type        = string
+}
+
+variable "database_master_secret_arn" {
+  description = "RDS-managed master secret retained temporarily during application credential migration"
   type        = string
 }

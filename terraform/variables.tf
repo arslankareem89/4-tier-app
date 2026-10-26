@@ -71,7 +71,19 @@ variable "db_allocated_storage" {
 }
 
 variable "db_backup_retention_period" {
-  description = "Automated RDS backup retention in days; 1 keeps a short recovery window"
+  description = "Automated RDS backup retention in days; currently limited to 1 day by the account's Free Tier restriction"
   type        = number
   default     = 1
+}
+
+variable "db_application_username" {
+  description = "Least-privilege PostgreSQL username used by the application"
+  type        = string
+  default     = "taskapp_runtime"
+}
+
+variable "db_application_secret_arn" {
+  description = "Secrets Manager ARN containing the application PostgreSQL credentials"
+  type        = string
+  default     = "arn:aws:secretsmanager:us-east-1:707575990308:secret:4-tier-app/dev/backend/db-app-user-H3Iho3"
 }

@@ -140,9 +140,13 @@ resource "aws_iam_role_policy" "read_database_secret" {
 
     Statement = [
       {
-        Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue"]
-        Resource = var.database_secret_arn
+        Effect = "Allow"
+        Action = ["secretsmanager:GetSecretValue"]
+        # Keep master-secret access temporarily so existing ECS tasks remain healthy.
+        Resource = [
+          var.database_secret_arn,
+          var.database_master_secret_arn
+        ]
       }
     ]
   })
@@ -356,6 +360,6 @@ resource "aws_ecs_service" "backend" {
   ]
 
   lifecycle {
-    ignore_changes = [desired_count]
+    ignore_changes = [desired_count, task_definition]
   }
 }
