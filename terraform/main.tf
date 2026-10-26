@@ -82,11 +82,12 @@ module "ecs" {
   uploads_bucket_name = module.storage.uploads_bucket_name
   uploads_bucket_arn  = module.storage.uploads_bucket_arn
 
-  database_endpoint   = module.database.endpoint
-  database_port       = module.database.port
-  database_name       = module.database.database_name
-  database_username   = module.database.username
-  database_secret_arn = module.database.master_user_secret_arn
+  database_endpoint          = module.database.endpoint
+  database_port              = module.database.port
+  database_name              = module.database.database_name
+  database_username          = var.db_application_username
+  database_secret_arn        = var.db_application_secret_arn
+  database_master_secret_arn = module.database.master_user_secret_arn
 
   desired_count      = var.ecs_desired_count
   min_capacity       = var.ecs_min_capacity

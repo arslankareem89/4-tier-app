@@ -64,14 +64,16 @@ resource "aws_db_instance" "postgres" {
   vpc_security_group_ids = [aws_security_group.database.id]
   publicly_accessible    = false
 
-  # Budget-conscious development defaults.
-  # Increase resilience settings before production use.
+  # Keep the configured backup retention period (currently one day due to
+  # the account's Free Tier restriction). Protect against accidental deletion
+  # and require a final snapshot for intentional deletion.
   multi_az                   = false
   backup_retention_period    = var.backup_retention_period
   auto_minor_version_upgrade = true
   copy_tags_to_snapshot      = true
-  deletion_protection        = false
-  skip_final_snapshot        = true
+  deletion_protection        = true
+  skip_final_snapshot        = false
+  final_snapshot_identifier  = "${local.identifier}-final-20261026"
 
   tags = {
     Name        = local.identifier
