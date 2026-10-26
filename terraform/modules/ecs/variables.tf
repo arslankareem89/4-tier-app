@@ -85,8 +85,3 @@ variable "database_secret_arn" {
   description = "Secrets Manager ARN containing the application PostgreSQL credentials"
   type        = string
 }
-
-variable "database_master_secret_arn" {
-  description = "RDS-managed master secret retained temporarily during application credential migration"
-  type        = string
-}
