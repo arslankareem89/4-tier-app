@@ -10,7 +10,7 @@ locals {
   static_cache_policy_id   = "658327ea-f89d-4fab-a63d-7e88639e58f6"
   disabled_cache_policy_id = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad"
 
-  # Forward viewer request headers except Host, plus cookies and query strings.
+  # Forward viewer headers except Host, plus cookies and query strings.
   api_origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac"
 }
 
@@ -79,21 +79,25 @@ resource "aws_cloudfront_distribution" "frontend" {
 
   price_class = "PriceClass_200"
 
-  # Private S3 static-content origin.
+  # Private S3 frontend origin using Origin Access Control.
   origin {
     domain_name              = aws_s3_bucket.frontend.bucket_regional_domain_name
     origin_id                = local.frontend_origin_id
     origin_access_control_id = aws_cloudfront_origin_access_control.frontend.id
 
-    s3_origin_config {
-      origin_access_identity = ""
-    }
+    connection_attempts         = 3
+    connection_timeout          = 10
+    response_completion_timeout = 0
   }
 
   # Existing ALB origin for FastAPI requests.
   origin {
     domain_name = var.alb_dns_name
     origin_id   = local.backend_origin_id
+
+    connection_attempts         = 3
+    connection_timeout          = 10
+    response_completion_timeout = 0
 
     custom_origin_config {
       http_port              = 80
@@ -215,6 +219,10 @@ resource "aws_cloudfront_distribution" "frontend" {
     origin_request_policy_id = local.api_origin_request_policy_id
     compress                 = true
   }
+
+  # ------------------------------------------------
+  # Distribution restrictions
+  # ------------------------------------------------
 
   restrictions {
     geo_restriction {
