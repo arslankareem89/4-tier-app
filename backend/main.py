@@ -312,9 +312,17 @@ class TTLCache:
 
             if not entry or entry[0] <= time.monotonic():
                 self.values.pop(key, None)
-                return None
+                result = None
+                outcome = "miss"
+            else:
+                result = entry[1]
+                outcome = "hit"
 
-            return entry[1]
+        logger.info(
+            "shared_cache_lookup backend=process_local result=%s",
+            outcome,
+        )
+        return result
 
     def set(self, key, value):
         with self.lock:
@@ -352,25 +360,38 @@ class RedisTTLCache:
             payload = self.client.get(key)
         except redis.exceptions.RedisError:
             logger.warning(
-                "shared_cache_read_failed key=%s; bypassing cache",
-                key,
+                "shared_cache_read_failed; bypassing cache",
                 exc_info=True,
+            )
+            logger.info(
+                "shared_cache_lookup backend=valkey result=error"
             )
             return None
 
         if payload is None:
+            logger.info(
+                "shared_cache_lookup backend=valkey result=miss"
+            )
             return None
 
         try:
-            return json.loads(payload)
+            value = json.loads(payload)
         except json.JSONDecodeError:
             logger.warning(
-                "shared_cache_invalid_payload key=%s",
-                key,
+                "shared_cache_invalid_payload",
                 exc_info=True,
             )
             self.invalidate(key)
+            logger.info(
+                "shared_cache_lookup backend=valkey "
+                "result=miss reason=invalid_payload"
+            )
             return None
+
+        logger.info(
+            "shared_cache_lookup backend=valkey result=hit"
+        )
+        return value
 
     def set(self, key, value):
         try:
@@ -382,8 +403,7 @@ class RedisTTLCache:
             self.client.set(key, payload, ex=self.ttl_seconds)
         except (redis.exceptions.RedisError, TypeError, ValueError):
             logger.warning(
-                "shared_cache_write_failed key=%s",
-                key,
+                "shared_cache_write_failed",
                 exc_info=True,
             )
 
@@ -392,8 +412,7 @@ class RedisTTLCache:
             self.client.delete(key)
         except redis.exceptions.RedisError:
             logger.warning(
-                "shared_cache_invalidation_failed key=%s",
-                key,
+                "shared_cache_invalidation_failed",
                 exc_info=True,
             )
 
