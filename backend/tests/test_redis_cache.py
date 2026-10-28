@@ -80,3 +80,33 @@ def test_redis_write_and_invalidation_failures_do_not_raise(monkeypatch):
 
     cache.set("tasks:7", [{"id": 7}])
     cache.invalidate("tasks:7")
+
+
+def test_redis_lookup_logs_hits_and_misses_without_keys(
+    monkeypatch, caplog
+):
+    caplog.set_level("INFO", logger="task_api")
+    client = FakeRedis()
+    install_fake_redis(monkeypatch, client)
+    cache = main.RedisTTLCache("rediss://cache.example:6379/0")
+    key = "tasks:private-user-id"
+
+    assert cache.get(key) is None
+    cache.set(key, [{"id": 7}])
+    assert cache.get(key) == [{"id": 7}]
+
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "shared_cache_" in record.getMessage()
+    ]
+
+    assert any(
+        "shared_cache_lookup backend=valkey result=miss" in message
+        for message in messages
+    )
+    assert any(
+        "shared_cache_lookup backend=valkey result=hit" in message
+        for message in messages
+    )
+    assert all("private-user-id" not in message for message in messages)
