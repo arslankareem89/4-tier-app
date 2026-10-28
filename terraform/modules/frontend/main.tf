@@ -131,6 +131,32 @@ resource "aws_cloudfront_distribution" "frontend" {
   }
 
   # ------------------------------------------------
+  # API behavior: health endpoint
+  # ------------------------------------------------
+
+  ordered_cache_behavior {
+    path_pattern           = "/health"
+    target_origin_id       = local.backend_origin_id
+    viewer_protocol_policy = "redirect-to-https"
+
+    allowed_methods = [
+      "GET",
+      "HEAD",
+      "OPTIONS"
+    ]
+
+    cached_methods = [
+      "GET",
+      "HEAD"
+    ]
+
+    # Disable caching for health responses.
+    cache_policy_id          = local.disabled_cache_policy_id
+    origin_request_policy_id = local.api_origin_request_policy_id
+    compress                 = true
+  }
+
+  # ------------------------------------------------
   # API behavior: authentication
   # ------------------------------------------------
 
