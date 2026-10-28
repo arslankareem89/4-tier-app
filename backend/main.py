@@ -9,6 +9,7 @@ import uuid
 
 import boto3
 import psycopg2
+import redis
 from botocore.exceptions import BotoCoreError, ClientError
 
 from datetime import datetime, timedelta, timezone
@@ -327,7 +328,89 @@ class TTLCache:
             self.values.pop(key, None)
 
 
-task_cache = TTLCache()
+class RedisTTLCache:
+    """Shared Redis/Valkey cache; cache failures fall back to the database."""
+
+    def __init__(self, url: str, ttl_seconds: int = 30):
+        self.ttl_seconds = ttl_seconds
+        self.client = redis.Redis.from_url(
+            url,
+            decode_responses=True,
+            socket_connect_timeout=1,
+            socket_timeout=1,
+            health_check_interval=30,
+        )
+
+    @staticmethod
+    def _json_default(value):
+        if isinstance(value, datetime):
+            return value.isoformat()
+        raise TypeError(f"Cannot JSON-encode {type(value).__name__}")
+
+    def get(self, key):
+        try:
+            payload = self.client.get(key)
+        except redis.exceptions.RedisError:
+            logger.warning(
+                "shared_cache_read_failed key=%s; bypassing cache",
+                key,
+                exc_info=True,
+            )
+            return None
+
+        if payload is None:
+            return None
+
+        try:
+            return json.loads(payload)
+        except json.JSONDecodeError:
+            logger.warning(
+                "shared_cache_invalid_payload key=%s",
+                key,
+                exc_info=True,
+            )
+            self.invalidate(key)
+            return None
+
+    def set(self, key, value):
+        try:
+            payload = json.dumps(
+                value,
+                default=self._json_default,
+                separators=(",", ":"),
+            )
+            self.client.set(key, payload, ex=self.ttl_seconds)
+        except (redis.exceptions.RedisError, TypeError, ValueError):
+            logger.warning(
+                "shared_cache_write_failed key=%s",
+                key,
+                exc_info=True,
+            )
+
+    def invalidate(self, key):
+        try:
+            self.client.delete(key)
+        except redis.exceptions.RedisError:
+            logger.warning(
+                "shared_cache_invalidation_failed key=%s",
+                key,
+                exc_info=True,
+            )
+
+
+CACHE_URL = os.getenv("CACHE_URL")
+if CACHE_URL:
+    try:
+        task_cache = RedisTTLCache(CACHE_URL)
+        logger.info("shared_task_cache_enabled ttl_seconds=30")
+    except (ValueError, redis.exceptions.RedisError):
+        logger.exception("shared_cache_initialization_failed")
+        task_cache = TTLCache()
+else:
+    if IS_PRODUCTION:
+        logger.warning("CACHE_URL missing; using process-local task cache")
+    task_cache = TTLCache()
+
 password_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 app = FastAPI(title="Task Management API")

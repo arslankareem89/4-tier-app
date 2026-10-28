@@ -70,6 +70,7 @@ jobs:
       ECS_CLUSTER: 4-tier-app-dev-backend
       ECS_SERVICE: 4-tier-app-dev-backend
       TASK_DEFINITION_FAMILY: 4-tier-app-dev-backend
+      CACHE_REPLICATION_GROUP_ID: tierapp-dev-cache
       FRONTEND_BUCKET: 4-tier-app-dev-frontend-707575990308
       CLOUDFRONT_DISTRIBUTION_ID: E3TCGFC1YZ2995
       IMAGE_TAG: ${{ github.sha }}
@@ -127,18 +128,38 @@ jobs:
         run: |
           set -euo pipefail
 
+          CACHE_ENDPOINT=$(aws elasticache describe-replication-groups \
+            --replication-group-id "$CACHE_REPLICATION_GROUP_ID" \
+            --query 'ReplicationGroups[0].NodeGroups[0].PrimaryEndpoint.Address' \
+            --output text)
+
+          if [[ -z "$CACHE_ENDPOINT" || "$CACHE_ENDPOINT" == "None" ]]; then
+            echo "::error::Could not find the Valkey primary endpoint."
+            exit 1
+          fi
+
+          CACHE_URL="rediss://${CACHE_ENDPOINT}:6379/0"
+          echo "Resolved Valkey endpoint successfully."
+
           aws ecs describe-task-definition \
             --task-definition "$TASK_DEFINITION_FAMILY" \
             --query 'taskDefinition' \
             --output json \
             > /tmp/current-task-definition.json
 
-          jq --arg image "${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}" '
+          jq --arg image "${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}" \
+            --arg cache_url "$CACHE_URL" '
             if ([.containerDefinitions[] | select(.name == "backend")] | length) != 1 then
               error("Expected exactly one container named backend")
             else
               .containerDefinitions |= map(
-                if .name == "backend" then .image = $image else . end
+                if .name == "backend" then
+                  .image = $image
+                  | .environment = (
+                      ((.environment // []) | map(select(.name != "CACHE_URL")))
+                      + [{"name": "CACHE_URL", "value": $cache_url}]
+                    )
+                else . end
               )
               | del(
                   .taskDefinitionArn,
