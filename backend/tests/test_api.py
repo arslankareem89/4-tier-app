@@ -21,6 +21,7 @@ def client(tmp_path, monkeypatch):
     upload_dir.mkdir()
     monkeypatch.setattr(main, "SessionLocal", test_session_local)
     monkeypatch.setattr(main, "UPLOAD_DIR", upload_dir)
+    monkeypatch.setattr(main, "task_cache", main.TTLCache())
     main.task_cache.values.clear()
 
     def override_get_db():
