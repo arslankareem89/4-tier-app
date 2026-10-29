@@ -85,3 +85,13 @@ variable "database_secret_arn" {
   description = "Secrets Manager ARN containing the application PostgreSQL credentials"
   type        = string
 }
+
+variable "upload_queue_url" {
+  description = "SQS URL for durable upload-processing jobs"
+  type        = string
+}
+
+variable "upload_queue_arn" {
+  description = "SQS ARN for upload-processing permissions"
+  type        = string
+}

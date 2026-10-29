@@ -69,8 +69,9 @@ jobs:
       ECR_REPOSITORY: 4-tier-app-backend
       ECS_CLUSTER: 4-tier-app-dev-backend
       ECS_SERVICE: 4-tier-app-dev-backend
-      TASK_DEFINITION_FAMILY: 4-tier-app-dev-backend
       CACHE_REPLICATION_GROUP_ID: tierapp-dev-cache
+      UPLOAD_QUEUE_NAME: 4-tier-app-dev-upload-processing
+      WORKER_ECS_SERVICE: 4-tier-app-dev-backend-worker
       FRONTEND_BUCKET: 4-tier-app-dev-frontend-707575990308
       CLOUDFRONT_DISTRIBUTION_ID: E3TCGFC1YZ2995
       IMAGE_TAG: ${{ github.sha }}
@@ -122,7 +123,7 @@ jobs:
         run: |
           docker push "${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
 
-      - name: Register new ECS task definition
+      - name: Register API task definition
         id: task-definition
         shell: bash
         run: |
@@ -133,22 +134,45 @@ jobs:
             --query 'ReplicationGroups[0].NodeGroups[0].PrimaryEndpoint.Address' \
             --output text)
 
+          UPLOAD_QUEUE_URL=$(aws sqs get-queue-url \
+            --queue-name "$UPLOAD_QUEUE_NAME" \
+            --query 'QueueUrl' \
+            --output text)
+
           if [[ -z "$CACHE_ENDPOINT" || "$CACHE_ENDPOINT" == "None" ]]; then
-            echo "::error::Could not find the Valkey primary endpoint."
+            echo "::error::Valkey endpoint was not found."
+            exit 1
+          fi
+
+          if [[ -z "$UPLOAD_QUEUE_URL" || "$UPLOAD_QUEUE_URL" == "None" ]]; then
+            echo "::error::SQS upload queue URL was not found."
             exit 1
           fi
 
           CACHE_URL="rediss://${CACHE_ENDPOINT}:6379/0"
-          echo "Resolved Valkey endpoint successfully."
+          echo "CACHE_URL=$CACHE_URL" >> "$GITHUB_ENV"
+          echo "UPLOAD_QUEUE_URL=$UPLOAD_QUEUE_URL" >> "$GITHUB_ENV"
+
+          CURRENT_TASK_DEFINITION=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+
+          if [[ -z "$CURRENT_TASK_DEFINITION" || "$CURRENT_TASK_DEFINITION" == "None" ]]; then
+            echo "::error::Could not resolve the active API task definition."
+            exit 1
+          fi
 
           aws ecs describe-task-definition \
-            --task-definition "$TASK_DEFINITION_FAMILY" \
+            --task-definition "$CURRENT_TASK_DEFINITION" \
             --query 'taskDefinition' \
             --output json \
-            > /tmp/current-task-definition.json
+            > /tmp/current-api-task-definition.json
 
           jq --arg image "${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}" \
-            --arg cache_url "$CACHE_URL" '
+            --arg cache_url "$CACHE_URL" \
+            --arg queue_url "$UPLOAD_QUEUE_URL" '
             if ([.containerDefinitions[] | select(.name == "backend")] | length) != 1 then
               error("Expected exactly one container named backend")
             else
@@ -156,8 +180,12 @@ jobs:
                 if .name == "backend" then
                   .image = $image
                   | .environment = (
-                      ((.environment // []) | map(select(.name != "CACHE_URL")))
-                      + [{"name": "CACHE_URL", "value": $cache_url}]
+                      ((.environment // []) |
+                        map(select(.name != "CACHE_URL" and .name != "SQS_QUEUE_URL")))
+                      + [
+                          {"name": "CACHE_URL", "value": $cache_url},
+                          {"name": "SQS_QUEUE_URL", "value": $queue_url}
+                        ]
                     )
                 else . end
               )
@@ -173,29 +201,110 @@ jobs:
                   .deregisteredBy
                 )
             end
-          ' /tmp/current-task-definition.json \
-            > /tmp/new-task-definition.json
+          ' /tmp/current-api-task-definition.json \
+            > /tmp/new-api-task-definition.json
 
-          NEW_TASK_DEFINITION=$(aws ecs register-task-definition \
-            --cli-input-json file:///tmp/new-task-definition.json \
+          NEW_API_TASK_DEFINITION=$(aws ecs register-task-definition \
+            --cli-input-json file:///tmp/new-api-task-definition.json \
             --query 'taskDefinition.taskDefinitionArn' \
             --output text)
 
-          echo "TASK_DEFINITION_ARN=$NEW_TASK_DEFINITION" >> "$GITHUB_ENV"
-          echo "Registered: $NEW_TASK_DEFINITION"
+          echo "TASK_DEFINITION_ARN=$NEW_API_TASK_DEFINITION" >> "$GITHUB_ENV"
+          echo "Registered API task definition."
 
-      - name: Deploy backend to ECS
+      - name: Deploy API to ECS
         run: |
+          set -euo pipefail
           aws ecs update-service \
             --cluster "$ECS_CLUSTER" \
             --service "$ECS_SERVICE" \
             --task-definition "$TASK_DEFINITION_ARN"
 
-      - name: Wait for ECS service to become stable
+      - name: Wait for API service to become stable
         run: |
           aws ecs wait services-stable \
             --cluster "$ECS_CLUSTER" \
             --services "$ECS_SERVICE"
+
+      - name: Register worker task definition
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          WORKER_CURRENT_TASK_DEFINITION=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$WORKER_ECS_SERVICE" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+
+          if [[ -z "$WORKER_CURRENT_TASK_DEFINITION" || "$WORKER_CURRENT_TASK_DEFINITION" == "None" ]]; then
+            echo "::error::Could not resolve the worker task definition."
+            exit 1
+          fi
+
+          aws ecs describe-task-definition \
+            --task-definition "$WORKER_CURRENT_TASK_DEFINITION" \
+            --query 'taskDefinition' \
+            --output json \
+            > /tmp/current-worker-task-definition.json
+
+          jq --arg image "${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}" \
+            --arg cache_url "$CACHE_URL" \
+            --arg queue_url "$UPLOAD_QUEUE_URL" '
+            if ([.containerDefinitions[] | select(.name == "upload-worker")] | length) != 1 then
+              error("Expected exactly one container named upload-worker")
+            else
+              .containerDefinitions |= map(
+                if .name == "upload-worker" then
+                  .image = $image
+                  | .command = ["python", "worker.py"]
+                  | .environment = (
+                      ((.environment // []) |
+                        map(select(.name != "CACHE_URL" and .name != "SQS_QUEUE_URL")))
+                      + [
+                          {"name": "CACHE_URL", "value": $cache_url},
+                          {"name": "SQS_QUEUE_URL", "value": $queue_url}
+                        ]
+                    )
+                else . end
+              )
+              | del(
+                  .taskDefinitionArn,
+                  .revision,
+                  .status,
+                  .requiresAttributes,
+                  .compatibilities,
+                  .registeredAt,
+                  .registeredBy,
+                  .deregisteredAt,
+                  .deregisteredBy
+                )
+            end
+          ' /tmp/current-worker-task-definition.json \
+            > /tmp/new-worker-task-definition.json
+
+          NEW_WORKER_TASK_DEFINITION=$(aws ecs register-task-definition \
+            --cli-input-json file:///tmp/new-worker-task-definition.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          echo "WORKER_TASK_DEFINITION_ARN=$NEW_WORKER_TASK_DEFINITION" >> "$GITHUB_ENV"
+          echo "Registered worker task definition."
+
+      - name: Deploy worker service
+        run: |
+          set -euo pipefail
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$WORKER_ECS_SERVICE" \
+            --task-definition "$WORKER_TASK_DEFINITION_ARN" \
+            --desired-count 1
+
+      - name: Wait for worker service to become stable
+        run: |
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" \
+            --services "$WORKER_ECS_SERVICE"
 
       - name: Upload frontend to S3
         run: |

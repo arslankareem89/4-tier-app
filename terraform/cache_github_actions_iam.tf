@@ -10,9 +10,12 @@ resource "aws_iam_role_policy" "github_actions_cache_discovery" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid      = "DescribeValkeyReplicationGroup"
-        Effect   = "Allow"
-        Action   = ["elasticache:DescribeReplicationGroups"]
+        Sid    = "DescribeValkeyReplicationGroup"
+        Effect = "Allow"
+        Action = [
+          "elasticache:DescribeReplicationGroups",
+          "sqs:GetQueueUrl"
+        ]
         Resource = "*"
       }
     ]

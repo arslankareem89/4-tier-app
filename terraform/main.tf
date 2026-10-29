@@ -88,6 +88,9 @@ module "ecs" {
   database_username   = var.db_application_username
   database_secret_arn = var.db_application_secret_arn
 
+  upload_queue_url = aws_sqs_queue.upload_processing.url
+  upload_queue_arn = aws_sqs_queue.upload_processing.arn
+
   desired_count      = var.ecs_desired_count
   min_capacity       = var.ecs_min_capacity
   max_capacity       = var.ecs_max_capacity

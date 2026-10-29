@@ -172,6 +172,22 @@ resource "aws_iam_role_policy" "s3_uploads" {
 }
 
 # --------------------------------------------------
+resource "aws_iam_role_policy" "upload_queue_send" {
+  name = "${local.name}-upload-queue-send"
+  role = aws_iam_role.task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["sqs:SendMessage"]
+        Resource = var.upload_queue_arn
+      }
+    ]
+  })
+}
+
 # ALB target group and listener
 # --------------------------------------------------
 
@@ -310,7 +326,8 @@ resource "aws_ecs_task_definition" "backend" {
     aws_iam_role_policy_attachment.execution_policy,
     aws_iam_role_policy.read_secret,
     aws_iam_role_policy.read_database_secret,
-    aws_iam_role_policy.s3_uploads
+    aws_iam_role_policy.s3_uploads,
+    aws_iam_role_policy.upload_queue_send
   ]
 }
 
@@ -357,5 +374,215 @@ resource "aws_ecs_service" "backend" {
 
   lifecycle {
     ignore_changes = [desired_count, task_definition]
+  }
+}
+
+
+# --------------------------------------------------
+# Durable upload-processing worker
+# --------------------------------------------------
+
+resource "aws_cloudwatch_log_group" "upload_worker" {
+  name              = "/ecs/${local.name}-worker"
+  retention_in_days = 30
+
+  tags = {
+    Name        = "${local.name}-worker"
+    Environment = var.environment
+    Purpose     = "Durable upload worker logs"
+  }
+}
+
+resource "aws_iam_role" "worker_task" {
+  name               = "${local.name}-worker-task"
+  assume_role_policy = data.aws_iam_policy_document.ecs_assume_role.json
+}
+
+resource "aws_iam_role_policy" "worker_read_database_secret" {
+  name = "${local.name}-worker-read-database-secret"
+  role = aws_iam_role.worker_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = var.database_secret_arn
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "worker_s3_read" {
+  name = "${local.name}-worker-s3-read"
+  role = aws_iam_role.worker_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "${var.uploads_bucket_arn}/*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "worker_sqs_consume" {
+  name = "${local.name}-worker-sqs-consume"
+  role = aws_iam_role.worker_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:ChangeMessageVisibility",
+          "sqs:GetQueueAttributes"
+        ]
+        Resource = var.upload_queue_arn
+      }
+    ]
+  })
+}
+
+resource "aws_ecs_task_definition" "upload_worker" {
+  family                   = "${local.name}-worker"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = "256"
+  memory                   = "512"
+  execution_role_arn       = aws_iam_role.execution.arn
+  task_role_arn            = aws_iam_role.worker_task.arn
+
+  container_definitions = jsonencode([
+    {
+      name        = "upload-worker"
+      image       = "${aws_ecr_repository.backend.repository_url}:bootstrap"
+      essential   = true
+      command     = ["python", "worker.py"]
+      stopTimeout = 120
+
+      environment = [
+        {
+          name  = "APP_ENV"
+          value = "production"
+        },
+        {
+          name  = "S3_BUCKET"
+          value = var.uploads_bucket_name
+        },
+        {
+          name  = "AWS_REGION"
+          value = var.aws_region
+        },
+        {
+          name  = "DB_HOST"
+          value = var.database_endpoint
+        },
+        {
+          name  = "DB_PORT"
+          value = tostring(var.database_port)
+        },
+        {
+          name  = "DB_NAME"
+          value = var.database_name
+        },
+        {
+          name  = "DB_USER"
+          value = var.database_username
+        },
+        {
+          name  = "DATABASE_SECRET_ARN"
+          value = var.database_secret_arn
+        },
+        {
+          name  = "SQS_QUEUE_URL"
+          value = var.upload_queue_url
+        },
+        {
+          name  = "SQS_MAX_RECEIVE_COUNT"
+          value = "3"
+        },
+        {
+          name  = "SQS_WAIT_TIME_SECONDS"
+          value = "20"
+        },
+        {
+          name  = "SQS_VISIBILITY_TIMEOUT_SECONDS"
+          value = "120"
+        }
+      ]
+
+      secrets = [
+        {
+          name      = "SECRET_KEY"
+          valueFrom = aws_secretsmanager_secret.backend.arn
+        }
+      ]
+
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.upload_worker.name
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "worker"
+        }
+      }
+    }
+  ])
+
+  depends_on = [
+    aws_iam_role_policy_attachment.execution_policy,
+    aws_iam_role_policy.read_secret,
+    aws_iam_role_policy.worker_read_database_secret,
+    aws_iam_role_policy.worker_s3_read,
+    aws_iam_role_policy.worker_sqs_consume
+  ]
+
+  tags = {
+    Name        = "${local.name}-worker"
+    Environment = var.environment
+    Purpose     = "Durable upload processing"
+  }
+}
+
+resource "aws_ecs_service" "upload_worker" {
+  name             = "${local.name}-worker"
+  cluster          = aws_ecs_cluster.backend.id
+  task_definition  = aws_ecs_task_definition.upload_worker.arn
+  desired_count    = 0
+  launch_type      = "FARGATE"
+  platform_version = "LATEST"
+
+  network_configuration {
+    subnets          = var.public_subnet_ids
+    security_groups  = [var.backend_security_group_id]
+    assign_public_ip = true
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.execution_policy,
+    aws_iam_role_policy.read_secret,
+    aws_iam_role_policy.worker_read_database_secret,
+    aws_iam_role_policy.worker_s3_read,
+    aws_iam_role_policy.worker_sqs_consume
+  ]
+
+  # GitHub Actions owns the live worker task definition and running count.
+  # Start at zero so Terraform cannot launch the placeholder bootstrap image.
+  lifecycle {
+    ignore_changes = [desired_count, task_definition]
+  }
+
+  tags = {
+    Name        = "${local.name}-worker"
+    Environment = var.environment
+    Purpose     = "Durable upload processing"
   }
 }
