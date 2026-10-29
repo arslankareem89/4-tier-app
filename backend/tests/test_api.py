@@ -258,3 +258,95 @@ def test_ttl_cache_expires_and_can_be_invalidated(monkeypatch):
     cache.set("key", ["fresh"])
     cache.invalidate("key")
     assert cache.get("key") is None
+
+def test_upload_enqueues_sqs_job_when_configured(client, monkeypatch):
+    import json
+
+    api, test_session_local, _ = client
+    token = register(api, "queue-uploader@example.test")
+
+    class FakeS3:
+        def __init__(self):
+            self.objects = {}
+
+        def put_object(self, **kwargs):
+            self.objects[kwargs["Key"]] = kwargs["Body"]
+
+        def delete_object(self, **kwargs):
+            self.objects.pop(kwargs["Key"], None)
+
+    class FakeSQS:
+        def __init__(self):
+            self.messages = []
+
+        def send_message(self, **kwargs):
+            self.messages.append(kwargs)
+            return {"MessageId": "test-message"}
+
+    fake_s3 = FakeS3()
+    fake_sqs = FakeSQS()
+    monkeypatch.setattr(main, "S3_BUCKET", "test-uploads-bucket")
+    monkeypatch.setattr(main, "s3_client", fake_s3)
+    monkeypatch.setattr(main, "SQS_QUEUE_URL", "https://sqs.example/queue")
+    monkeypatch.setattr(main, "sqs_client", fake_sqs)
+
+    response = api.post(
+        "/uploads",
+        headers=auth(token),
+        files={"file": ("queued.txt", b"queue this upload", "text/plain")},
+    )
+
+    assert response.status_code == 202
+    upload_id = response.json()["id"]
+    assert len(fake_sqs.messages) == 1
+    queued = json.loads(fake_sqs.messages[0]["MessageBody"])
+    assert queued["upload_id"] == upload_id
+
+    with test_session_local() as db:
+        record = db.get(main.Upload, upload_id)
+        assert record is not None
+        assert queued["storage_key"] == record.stored_name
+        assert record.processing_status == "processing"
+
+
+def test_upload_enqueue_failure_returns_503_and_preserves_upload(
+    client, monkeypatch
+):
+    api, test_session_local, _ = client
+    token = register(api, "queue-failure@example.test")
+
+    class FakeS3:
+        def __init__(self):
+            self.objects = {}
+
+        def put_object(self, **kwargs):
+            self.objects[kwargs["Key"]] = kwargs["Body"]
+
+        def delete_object(self, **kwargs):
+            self.objects.pop(kwargs["Key"], None)
+
+    class FailingSQS:
+        def send_message(self, **kwargs):
+            raise RuntimeError("simulated SQS outage")
+
+    fake_s3 = FakeS3()
+    monkeypatch.setattr(main, "S3_BUCKET", "test-uploads-bucket")
+    monkeypatch.setattr(main, "s3_client", fake_s3)
+    monkeypatch.setattr(main, "SQS_QUEUE_URL", "https://sqs.example/queue")
+    monkeypatch.setattr(main, "sqs_client", FailingSQS())
+
+    response = api.post(
+        "/uploads",
+        headers=auth(token),
+        files={"file": ("queue-failure.txt", b"enqueue failure", "text/plain")},
+    )
+
+    assert response.status_code == 503
+    # Preserve the object because SQS may have accepted the message even
+    # when the client received an ambiguous error.
+    assert len(fake_s3.objects) == 1
+
+    with test_session_local() as db:
+        records = db.query(main.Upload).all()
+        assert len(records) == 1
+        assert records[0].processing_status == "failed"

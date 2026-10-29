@@ -100,6 +100,21 @@ AWS_REGION = (
 )
 s3_client = boto3.client("s3", region_name=AWS_REGION) if S3_BUCKET else None
 
+SQS_QUEUE_URL = os.getenv("SQS_QUEUE_URL")
+sqs_client = (
+    boto3.client("sqs", region_name=AWS_REGION)
+    if SQS_QUEUE_URL
+    else None
+)
+
+if SQS_QUEUE_URL and not S3_BUCKET:
+    raise RuntimeError("Durable upload processing requires S3_BUCKET")
+
+if IS_PRODUCTION and S3_BUCKET and not SQS_QUEUE_URL:
+    raise RuntimeError(
+        "SQS_QUEUE_URL is required for production upload processing"
+    )
+
 cors_origins = [
     origin.strip()
     for origin in os.getenv(
@@ -506,8 +521,35 @@ def serialize_task(task: Task):
     }
 
 
-def process_upload(upload_id: str, storage_key: str):
+def update_upload_status(upload_id: str, processing_status: str) -> bool:
+    with SessionLocal() as db:
+        upload = db.get(Upload, upload_id)
+        if upload is None:
+            return False
+        upload.processing_status = processing_status
+        db.commit()
+        return True
+
+
+def process_upload(
+    upload_id: str,
+    storage_key: str,
+    *,
+    raise_on_error: bool = False,
+) -> bool:
     try:
+        with SessionLocal() as db:
+            upload = db.get(Upload, upload_id)
+            if upload is None:
+                raise LookupError("Upload record not found")
+
+            # SQS can redeliver messages, so completed work is idempotent.
+            if upload.processing_status == "complete":
+                return True
+
+            upload.processing_status = "processing"
+            db.commit()
+
         digest = hashlib.sha256()
 
         if S3_BUCKET:
@@ -516,7 +558,6 @@ def process_upload(upload_id: str, storage_key: str):
                 Key=storage_key,
             )
             uploaded_file = response["Body"]
-
             try:
                 for chunk in iter(
                     lambda: uploaded_file.read(1024 * 1024),
@@ -525,7 +566,6 @@ def process_upload(upload_id: str, storage_key: str):
                     digest.update(chunk)
             finally:
                 uploaded_file.close()
-
         else:
             with open(storage_key, "rb") as uploaded_file:
                 for chunk in iter(
@@ -536,31 +576,30 @@ def process_upload(upload_id: str, storage_key: str):
 
         with SessionLocal() as db:
             upload = db.get(Upload, upload_id)
+            if upload is None:
+                raise LookupError("Upload record disappeared")
+            upload.sha256 = digest.hexdigest()
+            upload.processing_status = "complete"
+            db.commit()
 
-            if upload:
-                upload.sha256 = digest.hexdigest()
-                upload.processing_status = "complete"
-                db.commit()
+        logger.info("upload_processing_complete upload_id=%s", upload_id)
+        return True
 
     except Exception:
         logger.exception(
             "upload_processing_failed upload_id=%s",
             upload_id,
         )
-
+        if raise_on_error:
+            raise
         try:
-            with SessionLocal() as db:
-                upload = db.get(Upload, upload_id)
-
-                if upload:
-                    upload.processing_status = "failed"
-                    db.commit()
-
+            update_upload_status(upload_id, "failed")
         except Exception:
             logger.exception(
                 "upload_failure_status_update_failed upload_id=%s",
                 upload_id,
             )
+        return False
 
 
 # --------------------------------------------------
@@ -896,11 +935,42 @@ def upload_file(
             detail="Upload metadata could not be saved",
         )
 
-    background_tasks.add_task(
-        process_upload,
-        upload_id,
-        stored_name if S3_BUCKET else str(stored_path),
-    )
+    if SQS_QUEUE_URL:
+        try:
+            sqs_client.send_message(
+                QueueUrl=SQS_QUEUE_URL,
+                MessageBody=json.dumps(
+                    {
+                        "upload_id": upload_id,
+                        "storage_key": stored_name,
+                    }
+                ),
+            )
+        except Exception:
+            logger.exception(
+                "upload_job_enqueue_failed upload_id=%s",
+                upload_id,
+            )
+            # A network failure may be ambiguous: SQS could have accepted
+            # the message. Preserve the S3 object and database record.
+            try:
+                upload.processing_status = "failed"
+                db.commit()
+            except Exception:
+                db.rollback()
+                logger.exception("upload_enqueue_failure_status_update_failed")
+
+            raise HTTPException(
+                status_code=503,
+                detail="Upload processing is temporarily unavailable",
+            )
+    else:
+        # Preserve in-process processing for local development and tests.
+        background_tasks.add_task(
+            process_upload,
+            upload_id,
+            stored_name if S3_BUCKET else str(stored_path),
+        )
 
     return upload
 
