@@ -11,6 +11,8 @@ data "aws_db_instance" "postgres" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "api_cpu_high" {
+  alarm_actions       = [aws_sns_topic.operations_alerts.arn]
+  ok_actions          = [aws_sns_topic.operations_alerts.arn]
   alarm_name          = "${var.project_name}-${var.environment}-api-cpu-high"
   alarm_description   = "API ECS service CPU remains high."
   comparison_operator = "GreaterThanThreshold"
@@ -34,6 +36,8 @@ resource "aws_cloudwatch_metric_alarm" "api_cpu_high" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "api_memory_high" {
+  alarm_actions       = [aws_sns_topic.operations_alerts.arn]
+  ok_actions          = [aws_sns_topic.operations_alerts.arn]
   alarm_name          = "${var.project_name}-${var.environment}-api-memory-high"
   alarm_description   = "API ECS service memory utilization remains high."
   comparison_operator = "GreaterThanThreshold"
@@ -57,6 +61,8 @@ resource "aws_cloudwatch_metric_alarm" "api_memory_high" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "worker_cpu_high" {
+  alarm_actions       = [aws_sns_topic.operations_alerts.arn]
+  ok_actions          = [aws_sns_topic.operations_alerts.arn]
   alarm_name          = "${var.project_name}-${var.environment}-worker-cpu-high"
   alarm_description   = "Upload worker ECS service CPU remains high."
   comparison_operator = "GreaterThanThreshold"
@@ -80,6 +86,8 @@ resource "aws_cloudwatch_metric_alarm" "worker_cpu_high" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "worker_memory_high" {
+  alarm_actions       = [aws_sns_topic.operations_alerts.arn]
+  ok_actions          = [aws_sns_topic.operations_alerts.arn]
   alarm_name          = "${var.project_name}-${var.environment}-worker-memory-high"
   alarm_description   = "Upload worker ECS service memory utilization remains high."
   comparison_operator = "GreaterThanThreshold"
@@ -103,6 +111,8 @@ resource "aws_cloudwatch_metric_alarm" "worker_memory_high" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "alb_target_latency_high" {
+  alarm_actions       = [aws_sns_topic.operations_alerts.arn]
+  ok_actions          = [aws_sns_topic.operations_alerts.arn]
   alarm_name          = "${var.project_name}-${var.environment}-alb-target-latency-high"
   alarm_description   = "Average API target response time exceeds one second in three of five minutes."
   comparison_operator = "GreaterThanThreshold"
@@ -126,6 +136,8 @@ resource "aws_cloudwatch_metric_alarm" "alb_target_latency_high" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "alb_target_5xx" {
+  alarm_actions       = [aws_sns_topic.operations_alerts.arn]
+  ok_actions          = [aws_sns_topic.operations_alerts.arn]
   alarm_name          = "${var.project_name}-${var.environment}-alb-target-5xx"
   alarm_description   = "One or more API targets returned HTTP 5xx responses during a five-minute period."
   comparison_operator = "GreaterThanThreshold"
@@ -148,6 +160,8 @@ resource "aws_cloudwatch_metric_alarm" "alb_target_5xx" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "alb_5xx" {
+  alarm_actions       = [aws_sns_topic.operations_alerts.arn]
+  ok_actions          = [aws_sns_topic.operations_alerts.arn]
   alarm_name          = "${var.project_name}-${var.environment}-alb-5xx"
   alarm_description   = "The application load balancer returned HTTP 5xx responses during a five-minute period."
   comparison_operator = "GreaterThanThreshold"
@@ -169,6 +183,8 @@ resource "aws_cloudwatch_metric_alarm" "alb_5xx" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "rds_cpu_high" {
+  alarm_actions       = [aws_sns_topic.operations_alerts.arn]
+  ok_actions          = [aws_sns_topic.operations_alerts.arn]
   alarm_name          = "${var.project_name}-${var.environment}-rds-cpu-high"
   alarm_description   = "RDS database CPU utilization remains high."
   comparison_operator = "GreaterThanThreshold"
