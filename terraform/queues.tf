@@ -32,6 +32,8 @@ resource "aws_sqs_queue" "upload_processing" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "upload_dlq_not_empty" {
+  alarm_actions       = [aws_sns_topic.operations_alerts.arn]
+  ok_actions          = [aws_sns_topic.operations_alerts.arn]
   alarm_name          = "${var.project_name}-${var.environment}-upload-dlq-not-empty"
   alarm_description   = "One or more upload jobs need investigation in the SQS dead-letter queue."
   comparison_operator = "GreaterThanThreshold"
